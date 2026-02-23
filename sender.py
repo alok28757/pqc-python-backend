@@ -4,30 +4,33 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import socket
 import os
-import time
+import json
 
-# --- KEY LOADING STEP ---
-# In a real app, load the Receiver's PK from a file/server.
-# For this test to work, we must assume 'receiver_pk.bin' exists.
-# If you don't have it, run a 'keygen.py' first!
-try:
-    with open("receiver_pk.bin", "rb") as f:
-        pk_bytes = f.read()
-    # Reconstruct the key object (library dependent, usually requires object or bytes)
-    # Note: If your library version is strict, you might need the helper we discussed earlier.
-    # For now, let's assume we can pass bytes to encrypt if the wrapper supports it,
-    # or we need to reconstruct the object. 
-    print("Loaded Receiver's Public Key.")
-except FileNotFoundError:
-    print("Error: receiver_pk.bin not found! Generate keys first.")
+# --- Step 1: Load public key registry ---
+with open("users.json", "r") as f:
+    users = json.load(f)
+
+# Choose the recipient
+recipient = "Bob"  # Change as needed
+if recipient not in users:
+    print(f"Error: Recipient {recipient} not found in users.json")
     exit()
 
-# 1. Encrypt KEM (Encapsulate)
-# Note: Check if your library version accepts raw bytes for 'encrypt'. 
-# If not, you may need a helper to turn bytes back into a PK Object.
-ct, ss_enc = ml_kem_512.encrypt(pk_bytes) 
+recipient_pk_file = users[recipient]
 
-# 2. Derive AES key
+# --- Step 2: Load recipient's public key ---
+try:
+    with open(recipient_pk_file, "rb") as f:
+        pk_bytes = f.read()
+    print(f"Loaded {recipient}'s Public Key from {recipient_pk_file}.")
+except FileNotFoundError:
+    print(f"Error: {recipient_pk_file} not found! Generate keys first.")
+    exit()
+
+# --- Step 3: Encrypt KEM (encapsulate shared secret) ---
+ct, ss_enc = ml_kem_512.encrypt(pk_bytes)
+
+# --- Step 4: Derive AES key from shared secret ---
 hkdf = HKDF(
     algorithm=hashes.SHA256(),
     length=32,
@@ -36,22 +39,22 @@ hkdf = HKDF(
 )
 symmetric_key = hkdf.derive(ss_enc)
 
-# 3. Encrypt transaction
+# --- Step 5: Encrypt transaction using AES-GCM ---
 transaction_data = b"Send 10 QuantumCoins to Bob"
 aesgcm = AESGCM(symmetric_key)
 nonce = os.urandom(12)
 ciphertext = aesgcm.encrypt(nonce, transaction_data, associated_data=None)
 
-# 4. Send over network (Fixed Lengths, No Separators)
+# --- Step 6: Send over network ---
 try:
     s = socket.socket()
     s.connect(('localhost', 5000))
     
-    # Send combined payload: [KEM Ciphertext (768)] + [Nonce (12)] + [AES Ciphertext (Var)]
+    # Combine payload: KEM Ciphertext + Nonce + AES Ciphertext
     payload = ct + nonce + ciphertext
     s.sendall(payload)
     
     s.close()
-    print(f"Transaction sent! Total bytes: {len(payload)}")
+    print(f"Transaction sent to {recipient}! Total bytes: {len(payload)}")
 except ConnectionRefusedError:
     print("Error: Connection refused. Is receiver.py running?")
